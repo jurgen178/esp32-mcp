@@ -3,7 +3,7 @@ Building an MCP Server on Arduino Nano ESP32: Bridging AI Assistants with Physic
 
 #### Connecting AI to the Physical World with Model Context Protocol
 
-I recently completed a project that brings together two cutting-edge technologies: the Model Context Protocol (MCP) and Arduino. The result is an MCP server running directly on an Arduino Nano ESP32, allowing AI assistants control physical hardware in real-time.
+This project that brings together two cutting-edge technologies: the Model Context Protocol (MCP) and Arduino. The result is an MCP server running directly on an Arduino Nano ESP32, allowing AI assistants control physical hardware in real-time.
 
 <br />
 
