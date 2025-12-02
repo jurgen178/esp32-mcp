@@ -1,7 +1,7 @@
-### esp32-mcp
+# esp32-mcp
 Building an MCP Server on Arduino Nano ESP32: Connecting AI Assistants to Real-World Devices  
 
-#### Connecting AI to the Physical World with Model Context Protocol
+### Connecting AI to the Physical World with Model Context Protocol
 
 This project that brings together two cutting-edge technologies: the Model Context Protocol (MCP) and Arduino Microcontroller. The result is an MCP server running directly on an Arduino Nano ESP32, allowing AI assistants control physical hardware in real-time.
 
@@ -20,11 +20,11 @@ Video:
 
 <br />
 
-##### What is it?
+### What is it?
 
 This project implements a fully-compliant JSON-RPC 2.0 MCP server on an Arduino Nano ESP32 microcontroller. It exposes hardware controls (LEDs in this case) as MCP "tools" that can be invoked by AI assistants through natural language commands.
 
-##### Key Features
+### Key Features
 
 - **Full MCP Protocol Support**: Implements the MCP 2024-11-05 specification with proper initialization, tool listing, and tool execution
 - **JSON-RPC 2.0 Compliance**: Standard protocol interface for reliable communication
@@ -33,7 +33,7 @@ This project implements a fully-compliant JSON-RPC 2.0 MCP server on an Arduino 
 - **Multiple LED Controls**: Manages built-in LED plus RGB LEDs (red, green, blue) independently
 - **Echo Tool**: Simple text echo for testing and demonstration
 
-##### Technical Implementation
+### Technical Implementation
 
 The server uses the ESPAsyncWebServer library for handling HTTP requests and ArduinoJson for JSON parsing/serialization. It exposes two main endpoints:
 - `POST /mcp` - Main JSON-RPC 2.0 endpoint for all MCP methods
@@ -41,7 +41,7 @@ The server uses the ESPAsyncWebServer library for handling HTTP requests and Ard
 
 Each LED is implemented as an MCP tool with a simple boolean parameter to turn it on or off. The server handles all the MCP lifecycle methods including initialization, capability negotiation, and tool invocation.
 
-##### Real-World Applications
+### Real-World Applications
 
 This project demonstrates how AI assistants can seamlessly control physical devices. Instead of writing custom scripts or manual API calls, you can simply tell an AI assistant "turn on the red LED" and it happens. This opens up possibilities for:
 - Smart home automation controlled by natural language
