@@ -1,12 +1,8 @@
 ### esp32-mcp
 Building an MCP Server on Arduino Nano ESP32: Bridging AI Assistants with Physical Hardware  
 
-<video width="100%" controls>
-  <source src="https://www.bitfabrik.io/blog/dateien/esp32-mcp/ESP32-mcp-2.mp4" type="video/MP4" />
-  <div style="padding: 8px;">
-    Your browser does not support the video tag.
-  </div>
-</video>
+Video:
+[![Video](https://www.bitfabrik.io/blog/dateien/esp32-mcp/ESP32-mcp-video.jpg)](https://www.bitfabrik.io/blog/dateien/esp32-mcp/ESP32-mcp-2.mp4)
 
 <br />
 
