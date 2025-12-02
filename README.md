@@ -1,5 +1,5 @@
 ### esp32-mcp
-Building an MCP Server on Arduino Nano ESP32: Bridging AI Assistants with Physical Hardware  
+Building an MCP Server on Arduino Nano ESP32: Connecting AI Assistants to Real-World Devices  
 
 #### Connecting AI to the Physical World with Model Context Protocol
 
