@@ -1,9 +1,22 @@
 ### esp32-mcp
 Building an MCP Server on Arduino Nano ESP32: Bridging AI Assistants with Physical Hardware  
 
+<video width="100%" controls>
+  <source src="https://www.bitfabrik.io/blog/dateien/esp32-mcp/ESP32-mcp-2.mp4" type="video/MP4" />
+  <div style="padding: 8px;">
+    Your browser does not support the video tag.
+  </div>
+</video>
+
+<br />
+
 ![ESP32-mcp](https://github.com/user-attachments/assets/1abc0813-3d2a-4a55-a85f-9174ea4552a1)
 
+<br />
+
 <img width="2496" height="1570" alt="vsc-mcp" src="https://github.com/user-attachments/assets/4dbd5c5f-7ccd-481d-bcf5-d5297dea1014" />
+
+<br />
 
 #### Connecting AI to the Physical World with Model Context Protocol
 
