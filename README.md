@@ -7,7 +7,9 @@ This project brings together two cutting-edge technologies: the Model Context Pr
 
 <br />
 
-Video:
+Video:  
+(Some prompts were typed a bit wrong because I had the camera in the way, but Copilot Chat did not mind at all)  
+
 [![Video](https://www.bitfabrik.io/blog/dateien/esp32-mcp/ESP32-mcp-video.jpg)](https://www.bitfabrik.io/blog/dateien/esp32-mcp/ESP32-mcp-2.mp4)
 
 <br />
@@ -18,6 +20,10 @@ Video:
 
 <img width="2496" height="1570" alt="vsc-mcp" src="https://github.com/user-attachments/assets/4dbd5c5f-7ccd-481d-bcf5-d5297dea1014" />
 
+<br />
+<br />
+
+Since there is no MCP SDK for C++, I implemented the RPC protocol myself, kept it small and readable, and made it work to run simple tools like switching lights on and off.  
 <br />
 
 ### What is it?
