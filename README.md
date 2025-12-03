@@ -2,6 +2,8 @@
 
 ### Connecting AI to the Physical World with Model Context Protocol
 
+As detailed in [StickyMCP: Notes That Stick, Even in the Cloud](https://www.bitfabrik.io/blog/index.php?id=253), MCP servers open the door for AI systems to interact with real-world tools far beyond their usual diet of static training data and existential boredom.  
+
 This project brings together two cutting-edge technologies: the Model Context Protocol (MCP) and Arduino Microcontroller. The result is an MCP server running directly on an Arduino Nano ESP32, allowing AI assistants control physical hardware in real-time.
 
 <br />
