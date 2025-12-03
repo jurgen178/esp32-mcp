@@ -32,7 +32,7 @@ This project implements a fully-compliant JSON-RPC 2.0 MCP server on an Arduino 
 
 ### Key Features
 
-- **Full MCP Protocol Support**: Implements the MCP 2024-11-05 specification with proper initialization, tool listing, and tool execution
+- **MCP Protocol Support**: Implements the MCP 2024-11-05 specification with proper initialization, tool listing, and tool execution
 - **JSON-RPC 2.0 Compliance**: Standard protocol interface for reliable communication
 - **WiFi-Enabled**: Runs a web server on port 8000, making it accessible over the network
 - **Server-Sent Events (SSE)**: Real-time notifications and logging stream for monitoring
