@@ -62,3 +62,7 @@ This project demonstrates how AI assistants can seamlessly control physical devi
 - ArduinoJson
 - Model Context Protocol (MCP) 2024-11-05
 - JSON-RPC 2.0
+
+<br />
+
+See also my [BitBlog](https://www.bitfabrik.io/blog/index.php?name=esp32-mcp)
