@@ -1,4 +1,4 @@
-# Building an MCP Server on Arduino Nano ESP32: Connecting AI Assistants to Real-World Devices  
+# Building an MCP Server on ESP32: Connecting AI Assistants to Real-World Devices  
 
 ### Connecting AI to the Physical World with Model Context Protocol
 
