@@ -65,6 +65,14 @@ static const size_t JSON_LARGE = 2048;
 const char* SERVER_NAME = "arduino-mcp";
 const char* SERVER_VERSION = "1.0.0";
 
+// ------- Timing Constants -------
+const unsigned long LED_INDICATOR_DELAY_MS = 100;
+const unsigned long INTRO_DISPLAY_DURATION_MS = 3000;
+const unsigned long WIFI_STATUS_DISPLAY_MS = 2000;
+const unsigned long WIFI_CONNECT_RETRY_MS = 500;
+const unsigned long I2C_INIT_DELAY_MS = 100;
+const unsigned long NOTIFICATION_COOLDOWN_MS = 50;  // Debounce notifications
+
 // ------- Utilities -------
 unsigned long bootMillis;
 bool displayAvailable = false;  // Flag if display is available
@@ -77,7 +85,7 @@ public:
   }
   
   ~McpRequestIndicator() {
-    delay(100);  // Keep visible briefly
+    delay(LED_INDICATOR_DELAY_MS);  // Keep visible briefly
     digitalWrite(LED_BUILTIN, LOW);   // LED off
   }
 };
@@ -195,6 +203,8 @@ public:
   void registerTool(McpTool* tool) {
     if (toolCount < MAX_TOOLS) {
       tools[toolCount++] = tool;
+    } else {
+      Serial.printf("FATAL: Tool registry overflow! Cannot register '%s'\n", tool->getName());
     }
   }
   
@@ -264,6 +274,8 @@ public:
   void registerResource(McpResource* resource) {
     if (resourceCount < MAX_RESOURCES) {
       resources[resourceCount++] = resource;
+    } else {
+      Serial.printf("FATAL: Resource registry overflow! Cannot register '%s'\n", resource->getUri());
     }
   }
   
@@ -291,17 +303,24 @@ ResourceRegistry resourceRegistry;
 
 // ------- Subscription Manager -------
 
+#include <mutex>
+
 class SubscriptionManager {
 private:
   static const int MAX_SUBSCRIPTIONS = 20;
   String subscriptions[MAX_SUBSCRIPTIONS];
   int count = 0;
+  mutable std::mutex mtx;  // Thread-safe access
   
 public:
   bool subscribe(const char* uri) {
+    std::lock_guard<std::mutex> lock(mtx);
+    
     // Check if already subscribed
-    if (isSubscribed(uri)) {
-      return true;
+    for (int i = 0; i < count; i++) {
+      if (subscriptions[i] == uri) {
+        return true;  // Already subscribed
+      }
     }
     
     if (count < MAX_SUBSCRIPTIONS) {
@@ -312,6 +331,8 @@ public:
   }
   
   bool unsubscribe(const char* uri) {
+    std::lock_guard<std::mutex> lock(mtx);
+    
     for (int i = 0; i < count; i++) {
       if (subscriptions[i] == uri) {
         // Shift remaining items
@@ -326,6 +347,8 @@ public:
   }
   
   bool isSubscribed(const char* uri) const {
+    std::lock_guard<std::mutex> lock(mtx);
+    
     for (int i = 0; i < count; i++) {
       if (subscriptions[i] == uri) {
         return true;
@@ -334,9 +357,13 @@ public:
     return false;
   }
   
-  int getSubscriptionCount() const { return count; }
+  int getSubscriptionCount() const { 
+    std::lock_guard<std::mutex> lock(mtx);
+    return count; 
+  }
   
   void clear() {
+    std::lock_guard<std::mutex> lock(mtx);
     count = 0;
   }
 };
@@ -344,12 +371,21 @@ public:
 // Global subscription manager
 SubscriptionManager subscriptionManager;
 
-// Helper to send resource update notification via SSE
+// Helper to send resource update notification via SSE (with debouncing)
 void sendResourceUpdateNotification(const char* uri) {
+  static unsigned long lastNotificationTime = 0;
+  unsigned long now = millis();
+  
+  // Debounce notifications
+  if (now - lastNotificationTime < NOTIFICATION_COOLDOWN_MS) {
+    return;  // Too soon, prevent notification spam
+  }
+  
   if (!subscriptionManager.isSubscribed(uri)) {
     return;  // No one subscribed
   }
   
+  lastNotificationTime = now;
   StaticJsonDocument<JSON_MED> doc;
   doc["jsonrpc"] = "2.0";
   doc["method"] = "notifications/resources/updated";
@@ -472,11 +508,10 @@ public:
   
   void read(JsonArray& content) override {
     StaticJsonDocument<JSON_SMALL> doc;
-    JsonObject status = doc.to<JsonObject>();
-    status["builtin"] = digitalRead(LED_BUILTIN) == HIGH;
-    status["red"] = digitalRead(LED_RED) == LOW;      // Active LOW
-    status["green"] = digitalRead(LED_GREEN) == LOW;  // Active LOW
-    status["blue"] = digitalRead(LED_BLUE) == LOW;    // Active LOW
+    doc["builtin"] = digitalRead(LED_BUILTIN) == HIGH;
+    doc["red"] = digitalRead(LED_RED) == LOW;      // Active LOW
+    doc["green"] = digitalRead(LED_GREEN) == LOW;  // Active LOW
+    doc["blue"] = digitalRead(LED_BLUE) == LOW;    // Active LOW
     
     String jsonText;
     serializeJson(doc, jsonText);
@@ -492,13 +527,12 @@ public:
   
   void read(JsonArray& content) override {
     StaticJsonDocument<JSON_SMALL> doc;
-    JsonObject info = doc.to<JsonObject>();
-    info["uptime_ms"] = millis() - bootMillis;
-    info["uptime_sec"] = (millis() - bootMillis) / 1000;
-    info["free_heap"] = ESP.getFreeHeap();
-    info["wifi_rssi"] = WiFi.RSSI();
-    info["wifi_connected"] = WiFi.status() == WL_CONNECTED;
-    info["subscriptions"] = subscriptionManager.getSubscriptionCount();
+    doc["uptime_ms"] = millis() - bootMillis;
+    doc["uptime_sec"] = (millis() - bootMillis) / 1000;
+    doc["free_heap"] = ESP.getFreeHeap();
+    doc["wifi_rssi"] = WiFi.RSSI();
+    doc["wifi_connected"] = WiFi.status() == WL_CONNECTED;
+    doc["subscriptions"] = subscriptionManager.getSubscriptionCount();
     
     String jsonText;
     serializeJson(doc, jsonText);
@@ -514,12 +548,11 @@ public:
   
   void read(JsonArray& content) override {
     StaticJsonDocument<JSON_SMALL> doc;
-    JsonObject status = doc.to<JsonObject>();
-    status["connected"] = WiFi.status() == WL_CONNECTED;
-    status["ssid"] = WiFi.SSID();
-    status["ip"] = WiFi.localIP().toString();
-    status["rssi"] = WiFi.RSSI();
-    status["signal_quality"] = map(WiFi.RSSI(), -100, -50, 0, 100);
+    doc["connected"] = WiFi.status() == WL_CONNECTED;
+    doc["ssid"] = WiFi.SSID();
+    doc["ip"] = WiFi.localIP().toString();
+    doc["rssi"] = WiFi.RSSI();
+    doc["signal_quality"] = map(WiFi.RSSI(), -100, -50, 0, 100);
     
     String jsonText;
     serializeJson(doc, jsonText);
@@ -954,7 +987,7 @@ void showQRCode() {
   display.print("IDEAS");
   display.display();
   Serial.println("Intro displayed");
-  delay(3000);  // 3 seconds
+  delay(INTRO_DISPLAY_DURATION_MS);
   
   // Show QR code
   String ipAddress = WiFi.localIP().toString();
@@ -1014,7 +1047,7 @@ void setup() {
   // Initialize I2C and display
   Wire.begin();
   Serial.println("I2C initialized");
-  delay(100);
+  delay(I2C_INIT_DELAY_MS);
   
   // I2C scan to verify display is physically connected
   Serial.println("Scanning I2C bus...");
@@ -1059,7 +1092,7 @@ void setup() {
   
   int dotCount = 0;
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+    delay(WIFI_CONNECT_RETRY_MS);
     Serial.print(".");
     
     if (displayAvailable) {
@@ -1085,7 +1118,7 @@ void setup() {
     display.setCursor(0, 35);
     display.print(WiFi.localIP().toString());
     display.display();
-    delay(2000);  // 2 seconds to read the message
+    delay(WIFI_STATUS_DISPLAY_MS);
   }
 
   // Enable CORS for web browser access
