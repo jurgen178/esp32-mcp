@@ -5,6 +5,9 @@
 As detailed in [StickyMCP: Notes That Stick, Even in the Cloud](https://www.bitfabrik.io/blog/index.php?id=253), MCP servers open the door for AI systems to interact with real-world tools far beyond their usual diet of static training data and existential boredom.  
 
 This project brings together two cutting-edge technologies: the Model Context Protocol (MCP) and Arduino Microcontroller. The result is an MCP server running directly on an Arduino Nano ESP32, allowing AI assistants control physical hardware in real-time.
+<br />
+
+![DSC_1032](https://github.com/user-attachments/assets/505da7b4-4b12-482f-af9b-63dba4a2b079)
 
 <br />
 
@@ -35,6 +38,7 @@ This project implements a fully-compliant JSON-RPC 2.0 MCP server on an Arduino 
 
 - **MCP Protocol Support**: Implements the MCP 2024-11-05 specification with proper initialization, tool listing, and tool execution
 - **JSON-RPC 2.0 Compliance**: Standard protocol interface for reliable communication
+- **OLED Display with QR Code**: Shows server URL as scannable QR code for easy mobile access
 - **WiFi-Enabled**: Runs a web server on port 8000, making it accessible over the network
 - **Server-Sent Events (SSE)**: Real-time notifications and logging stream for monitoring
 - **Multiple LED Controls**: Manages built-in LED plus RGB LEDs (red, green, blue) independently
