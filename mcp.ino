@@ -6,9 +6,13 @@
     GET  /sse    -> SSE stream for notifications/logging
 
   MCP Methods:
-    - initialize: Server initialization
+    - initialize: Server initialization with protocol version negotiation
     - tools/list: List available tools
     - tools/call: Invoke a tool
+    - resources/list: List available resources
+    - resources/read: Read resource data
+    - resources/subscribe: Subscribe to resource updates
+    - resources/unsubscribe: Unsubscribe from resource updates
 
   Dependencies (Library Manager):
     - ESPAsyncWebServer
