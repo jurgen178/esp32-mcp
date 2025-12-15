@@ -637,25 +637,39 @@ void setup() {
   Serial.println("I2C initialized");
   delay(100);
   
-  if(display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
-    displayAvailable = true;
-    Serial.println("✓ Display successfully initialized");
+  // I2C scan to verify display is physically connected
+  Serial.println("Scanning I2C bus...");
+  Wire.beginTransmission(SCREEN_ADDRESS);
+  byte error = Wire.endTransmission();
+  
+  if (error == 0) {
+    Serial.printf("✓ I2C device found at address 0x%02X\n", SCREEN_ADDRESS);
     
-    display.clearDisplay();
-    display.display();
-    delay(100);
-    
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 20);
-    display.println("Connecting WiFi");
-    display.setCursor(0, 35);
-    display.print(WIFI_SSID);
-    display.display();
+    // Now try to initialize display
+    if(display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+      displayAvailable = true;
+      Serial.println("✓ Display successfully initialized");
+      
+      display.clearDisplay();
+      display.display();
+      delay(100);
+      
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(0, 20);
+      display.println("Connecting WiFi");
+      display.setCursor(0, 35);
+      display.print(WIFI_SSID);
+      display.display();
+    } else {
+      displayAvailable = false;
+      Serial.println("✗ Display found via I2C but init failed!");
+      Serial.println("MCP Server continues without display.");
+    }
   } else {
     displayAvailable = false;
-    Serial.println("WARNING: OLED Display not found!");
+    Serial.printf("✗ No I2C device at address 0x%02X (error: %d)\n", SCREEN_ADDRESS, error);
     Serial.println("MCP Server continues without display.");
   }
 
