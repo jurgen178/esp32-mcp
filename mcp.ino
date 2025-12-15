@@ -216,6 +216,151 @@ public:
 // Global registry
 ToolRegistry toolRegistry;
 
+// ------- MCP Resource Framework -------
+
+// Base class for MCP resources
+class McpResource {
+public:
+  virtual ~McpResource() {}
+  
+  virtual const char* getUri() const = 0;
+  virtual const char* getName() const = 0;
+  virtual const char* getDescription() const = 0;
+  virtual const char* getMimeType() const { return "application/json"; }
+  
+  // Build the resource info for resources/list
+  virtual void buildInfo(JsonObject& resource) const {
+    resource["uri"] = getUri();
+    resource["name"] = getName();
+    resource["description"] = getDescription();
+    resource["mimeType"] = getMimeType();
+  }
+  
+  // Read the resource data
+  virtual void read(JsonArray& content) = 0;
+  
+protected:
+  // Helper to add JSON content to response
+  void addJsonContent(JsonArray& content, const char* jsonText) const {
+    JsonObject textContent = content.createNestedObject();
+    textContent["uri"] = getUri();
+    textContent["mimeType"] = getMimeType();
+    textContent["text"] = jsonText;
+  }
+};
+
+// Resource Registry
+class ResourceRegistry {
+private:
+  static const int MAX_RESOURCES = 10;
+  McpResource* resources[MAX_RESOURCES];
+  int resourceCount = 0;
+  
+public:
+  void registerResource(McpResource* resource) {
+    if (resourceCount < MAX_RESOURCES) {
+      resources[resourceCount++] = resource;
+    }
+  }
+  
+  McpResource* findResource(const char* uri) {
+    for (int i = 0; i < resourceCount; i++) {
+      if (strcmp(resources[i]->getUri(), uri) == 0) {
+        return resources[i];
+      }
+    }
+    return nullptr;
+  }
+  
+  void buildResourcesList(JsonArray& resourcesArray) {
+    for (int i = 0; i < resourceCount; i++) {
+      JsonObject resource = resourcesArray.createNestedObject();
+      resources[i]->buildInfo(resource);
+    }
+  }
+  
+  int getResourceCount() const { return resourceCount; }
+};
+
+// Global resource registry
+ResourceRegistry resourceRegistry;
+
+// ------- Subscription Manager -------
+
+class SubscriptionManager {
+private:
+  static const int MAX_SUBSCRIPTIONS = 20;
+  String subscriptions[MAX_SUBSCRIPTIONS];
+  int count = 0;
+  
+public:
+  bool subscribe(const char* uri) {
+    // Check if already subscribed
+    if (isSubscribed(uri)) {
+      return true;
+    }
+    
+    if (count < MAX_SUBSCRIPTIONS) {
+      subscriptions[count++] = String(uri);
+      return true;
+    }
+    return false;
+  }
+  
+  bool unsubscribe(const char* uri) {
+    for (int i = 0; i < count; i++) {
+      if (subscriptions[i] == uri) {
+        // Shift remaining items
+        for (int j = i; j < count - 1; j++) {
+          subscriptions[j] = subscriptions[j + 1];
+        }
+        count--;
+        return true;
+      }
+    }
+    return false;
+  }
+  
+  bool isSubscribed(const char* uri) const {
+    for (int i = 0; i < count; i++) {
+      if (subscriptions[i] == uri) {
+        return true;
+      }
+    }
+    return false;
+  }
+  
+  int getSubscriptionCount() const { return count; }
+  
+  void clear() {
+    count = 0;
+  }
+};
+
+// Global subscription manager
+SubscriptionManager subscriptionManager;
+
+// Helper to send resource update notification via SSE
+void sendResourceUpdateNotification(const char* uri) {
+  if (!subscriptionManager.isSubscribed(uri)) {
+    return;  // No one subscribed
+  }
+  
+  StaticJsonDocument<JSON_MED> doc;
+  doc["jsonrpc"] = "2.0";
+  doc["method"] = "notifications/resources/updated";
+  JsonObject params = doc.createNestedObject("params");
+  params["uri"] = uri;
+  
+  String out;
+  serializeJson(doc, out);
+  events.send(out.c_str(), "notification", millis());
+  
+  Serial.println(">>> NOTIFICATION SENT:");
+  serializeJsonPretty(doc, Serial);
+  Serial.println();
+}
+
 // ------- Concrete Tool Implementations -------
 
 class LedTool : public McpTool {
@@ -235,6 +380,10 @@ public:
     
     digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
     addTextContent(content, on ? "LED turned on" : "LED turned off");
+    
+    // Notify subscribers that LED status changed
+    sendResourceUpdateNotification("led://status");
+    
     return true;
   }
 };
@@ -294,6 +443,10 @@ public:
     // Use instance buffer to avoid temporary string issues
     snprintf(messageBuffer, sizeof(messageBuffer), "%s LED turned %s", colorName, on ? "on" : "off");
     addTextContent(content, messageBuffer);
+    
+    // Notify subscribers that LED status changed
+    sendResourceUpdateNotification("led://status");
+    
     return true;
   }
 };
@@ -304,6 +457,76 @@ EchoTool echoTool;
 RgbLedTool redLedTool("red_led", "Control the red LED", LED_RED, "Red");
 RgbLedTool greenLedTool("green_led", "Control the green LED", LED_GREEN, "Green");
 RgbLedTool blueLedTool("blue_led", "Control the blue LED", LED_BLUE, "Blue");
+
+// ------- Concrete Resource Implementations -------
+
+class LedStatusResource : public McpResource {
+public:
+  const char* getUri() const override { return "led://status"; }
+  const char* getName() const override { return "LED Status"; }
+  const char* getDescription() const override { return "Current status of all LEDs"; }
+  
+  void read(JsonArray& content) override {
+    StaticJsonDocument<JSON_SMALL> doc;
+    JsonObject status = doc.to<JsonObject>();
+    status["builtin"] = digitalRead(LED_BUILTIN) == HIGH;
+    status["red"] = digitalRead(LED_RED) == LOW;      // Active LOW
+    status["green"] = digitalRead(LED_GREEN) == LOW;  // Active LOW
+    status["blue"] = digitalRead(LED_BLUE) == LOW;    // Active LOW
+    
+    String jsonText;
+    serializeJson(doc, jsonText);
+    addJsonContent(content, jsonText.c_str());
+  }
+};
+
+class SystemInfoResource : public McpResource {
+public:
+  const char* getUri() const override { return "system://info"; }
+  const char* getName() const override { return "System Information"; }
+  const char* getDescription() const override { return "Arduino system information"; }
+  
+  void read(JsonArray& content) override {
+    StaticJsonDocument<JSON_SMALL> doc;
+    JsonObject info = doc.to<JsonObject>();
+    info["uptime_ms"] = millis() - bootMillis;
+    info["uptime_sec"] = (millis() - bootMillis) / 1000;
+    info["free_heap"] = ESP.getFreeHeap();
+    info["wifi_rssi"] = WiFi.RSSI();
+    info["wifi_connected"] = WiFi.status() == WL_CONNECTED;
+    info["subscriptions"] = subscriptionManager.getSubscriptionCount();
+    
+    String jsonText;
+    serializeJson(doc, jsonText);
+    addJsonContent(content, jsonText.c_str());
+  }
+};
+
+class WifiStatusResource : public McpResource {
+public:
+  const char* getUri() const override { return "wifi://status"; }
+  const char* getName() const override { return "WiFi Status"; }
+  const char* getDescription() const override { return "WiFi connection status and signal strength"; }
+  
+  void read(JsonArray& content) override {
+    StaticJsonDocument<JSON_SMALL> doc;
+    JsonObject status = doc.to<JsonObject>();
+    status["connected"] = WiFi.status() == WL_CONNECTED;
+    status["ssid"] = WiFi.SSID();
+    status["ip"] = WiFi.localIP().toString();
+    status["rssi"] = WiFi.RSSI();
+    status["signal_quality"] = map(WiFi.RSSI(), -100, -50, 0, 100);
+    
+    String jsonText;
+    serializeJson(doc, jsonText);
+    addJsonContent(content, jsonText.c_str());
+  }
+};
+
+// Resource instances
+LedStatusResource ledStatusResource;
+SystemInfoResource systemInfoResource;
+WifiStatusResource wifiStatusResource;
 
 void sseLog(const char* msg) {
   StaticJsonDocument<JSON_MED> doc;
@@ -392,14 +615,24 @@ void handleMCP(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t
   // Handle initialize
   if (strcmp(method, "initialize") == 0) {
     JsonObject result = response.createNestedObject("result");
-    result["protocolVersion"] = "2024-11-05";
+    
+    // Use client's protocol version if provided, otherwise use latest
+    const char* clientVersion = params["protocolVersion"] | "2025-06-18";
+    result["protocolVersion"] = clientVersion;
     
     JsonObject serverInfo = result.createNestedObject("serverInfo");
     serverInfo["name"] = SERVER_NAME;
     serverInfo["version"] = SERVER_VERSION;
     
     JsonObject capabilities = result.createNestedObject("capabilities");
-    capabilities["tools"] = true;
+    
+    // Tools capability (empty object for 2025+ protocol)
+    JsonObject toolsCap = capabilities.createNestedObject("tools");
+    
+    // Resources capability
+    JsonObject resourcesCap = capabilities.createNestedObject("resources");
+    resourcesCap["subscribe"] = true;
+    resourcesCap["listChanged"] = false;  // Not implemented yet
     
     String out;
     serializeJson(response, out);
@@ -489,6 +722,142 @@ void handleMCP(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t
     Serial.println();
     request->send(200, "application/json", out);
     sseResult(out.c_str());
+    return;
+  }
+
+  // Handle resources/list
+  if (strcmp(method, "resources/list") == 0) {
+    JsonObject result = response.createNestedObject("result");
+    JsonArray resources = result.createNestedArray("resources");
+    
+    resourceRegistry.buildResourcesList(resources);
+    
+    String out;
+    serializeJson(response, out);
+    Serial.println("<<< RESPONSE:");
+    serializeJsonPretty(response, Serial);
+    Serial.println();
+    request->send(200, "application/json", out);
+    return;
+  }
+
+  // Handle resources/read
+  if (strcmp(method, "resources/read") == 0) {
+    if (!params.containsKey("uri")) {
+      JsonObject error = response.createNestedObject("error");
+      error["code"] = -32602;
+      error["message"] = "Missing resource uri";
+      
+      String out;
+      serializeJson(response, out);
+      request->send(400, "application/json", out);
+      return;
+    }
+    
+    const char* uri = params["uri"];
+    McpResource* resource = resourceRegistry.findResource(uri);
+    
+    if (!resource) {
+      JsonObject error = response.createNestedObject("error");
+      error["code"] = -32602;
+      error["message"] = "Unknown resource";
+      
+      String out;
+      serializeJson(response, out);
+      request->send(400, "application/json", out);
+      return;
+    }
+    
+    JsonObject result = response.createNestedObject("result");
+    JsonArray contents = result.createNestedArray("contents");
+    resource->read(contents);
+    
+    String out;
+    serializeJson(response, out);
+    Serial.println("<<< RESPONSE:");
+    serializeJsonPretty(response, Serial);
+    Serial.println();
+    request->send(200, "application/json", out);
+    return;
+  }
+
+  // Handle resources/subscribe
+  if (strcmp(method, "resources/subscribe") == 0) {
+    if (!params.containsKey("uri")) {
+      JsonObject error = response.createNestedObject("error");
+      error["code"] = -32602;
+      error["message"] = "Missing resource uri";
+      
+      String out;
+      serializeJson(response, out);
+      request->send(400, "application/json", out);
+      return;
+    }
+    
+    const char* uri = params["uri"];
+    
+    // Verify resource exists
+    McpResource* resource = resourceRegistry.findResource(uri);
+    if (!resource) {
+      JsonObject error = response.createNestedObject("error");
+      error["code"] = -32602;
+      error["message"] = "Unknown resource";
+      
+      String out;
+      serializeJson(response, out);
+      request->send(400, "application/json", out);
+      return;
+    }
+    
+    // Add to subscriptions
+    if (!subscriptionManager.subscribe(uri)) {
+      JsonObject error = response.createNestedObject("error");
+      error["code"] = -32603;
+      error["message"] = "Subscription limit reached";
+      
+      String out;
+      serializeJson(response, out);
+      request->send(400, "application/json", out);
+      return;
+    }
+    
+    JsonObject result = response.createNestedObject("result");
+    // Empty result object for success
+    
+    String out;
+    serializeJson(response, out);
+    Serial.println("<<< RESPONSE:");
+    serializeJsonPretty(response, Serial);
+    Serial.println();
+    request->send(200, "application/json", out);
+    return;
+  }
+
+  // Handle resources/unsubscribe
+  if (strcmp(method, "resources/unsubscribe") == 0) {
+    if (!params.containsKey("uri")) {
+      JsonObject error = response.createNestedObject("error");
+      error["code"] = -32602;
+      error["message"] = "Missing resource uri";
+      
+      String out;
+      serializeJson(response, out);
+      request->send(400, "application/json", out);
+      return;
+    }
+    
+    const char* uri = params["uri"];
+    subscriptionManager.unsubscribe(uri);
+    
+    JsonObject result = response.createNestedObject("result");
+    // Empty result object for success
+    
+    String out;
+    serializeJson(response, out);
+    Serial.println("<<< RESPONSE:");
+    serializeJsonPretty(response, Serial);
+    Serial.println();
+    request->send(200, "application/json", out);
     return;
   }
 
@@ -631,6 +1000,12 @@ void setup() {
   toolRegistry.registerTool(&greenLedTool);
   toolRegistry.registerTool(&blueLedTool);
   Serial.printf("Registered %d tools\n", toolRegistry.getToolCount());
+
+  // Register all resources
+  resourceRegistry.registerResource(&ledStatusResource);
+  resourceRegistry.registerResource(&systemInfoResource);
+  resourceRegistry.registerResource(&wifiStatusResource);
+  Serial.printf("Registered %d resources\n", resourceRegistry.getResourceCount());
 
   // Initialize I2C and display
   Wire.begin();
