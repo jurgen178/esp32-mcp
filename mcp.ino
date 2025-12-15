@@ -13,11 +13,18 @@
   Dependencies (Library Manager):
     - ESPAsyncWebServer
     - ArduinoJson
+    - Adafruit SSD1306
+    - Adafruit GFX Library
+    - QRCodeGFX
 */
 
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <QRCodeGFX.h>
 
 #ifndef LED_BUILTIN
 #define LED_BUILTIN 13
@@ -28,13 +35,21 @@
 #define LED_GREEN 15   // Pin 15 for green
 #define LED_BLUE 16    // Pin 16 for blue
 
+// ------- OLED Display Config -------
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+#define SCREEN_ADDRESS 0x3C
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
 // ------- WiFi config -------
 #include "arduino_secrets.h"
 const char* WIFI_SSID = SECRET_SSID;
 const char* WIFI_PSK  = SECRET_PASS;
 
-// ------- Server on port 8000 -------
-AsyncWebServer server(8000);
+// ------- Server config -------
+const int SERVER_PORT = 8000;  // Konfigurierbar: Ändere hier den Port
+AsyncWebServer server(SERVER_PORT);
 AsyncEventSource events("/sse");   // SSE endpoint for MCP notifications
 
 // ------- Buffers (tune for your payload sizes) -------
@@ -48,6 +63,247 @@ const char* SERVER_VERSION = "1.0.0";
 
 // ------- Utilities -------
 unsigned long bootMillis;
+bool displayAvailable = false;  // Flag if display is available
+
+// RAII class for LED indicator on MCP requests
+class McpRequestIndicator {
+public:
+  McpRequestIndicator() {
+    digitalWrite(LED_BUILTIN, HIGH);  // LED on
+  }
+  
+  ~McpRequestIndicator() {
+    delay(100);  // Keep visible briefly
+    digitalWrite(LED_BUILTIN, LOW);   // LED off
+  }
+};
+
+// ------- MCP Tool Framework -------
+
+// Base class for MCP tools
+class McpTool {
+public:
+  virtual ~McpTool() {}  // Virtual destructor for proper cleanup
+  
+  virtual const char* getName() const = 0;
+  virtual const char* getDescription() const = 0;
+  
+  // Build the tool's JSON schema for tools/list
+  virtual void buildSchema(JsonObject& tool) const {
+    tool["name"] = getName();
+    tool["description"] = getDescription();
+    JsonObject schema = tool.createNestedObject("inputSchema");
+    schema["type"] = "object";
+    addSchemaProperties(schema);
+  }
+  
+  // Execute the tool with given arguments
+  virtual bool execute(const JsonVariantConst args, JsonArray& content, String& error) = 0;
+  
+protected:
+  // Override to add custom schema properties
+  virtual void addSchemaProperties(JsonObject& schema) const = 0;
+  
+  // Helper to add a boolean parameter to schema
+  void addBoolParam(JsonObject& schema, const char* name, const char* desc, bool required = true) const {
+    JsonObject props = schema["properties"].isNull() ? 
+                       schema.createNestedObject("properties") : 
+                       schema["properties"].as<JsonObject>();
+    JsonObject param = props.createNestedObject(name);
+    param["type"] = "boolean";
+    param["description"] = desc;
+    
+    if (required) {
+      JsonArray req = schema["required"].isNull() ? 
+                      schema.createNestedArray("required") : 
+                      schema["required"].as<JsonArray>();
+      req.add(name);
+    }
+  }
+  
+  // Helper to add a string parameter to schema
+  void addStringParam(JsonObject& schema, const char* name, const char* desc, bool required = true) const {
+    JsonObject props = schema["properties"].isNull() ? 
+                       schema.createNestedObject("properties") : 
+                       schema["properties"].as<JsonObject>();
+    JsonObject param = props.createNestedObject(name);
+    param["type"] = "string";
+    param["description"] = desc;
+    
+    if (required) {
+      JsonArray req = schema["required"].isNull() ? 
+                      schema.createNestedArray("required") : 
+                      schema["required"].as<JsonArray>();
+      req.add(name);
+    }
+  }
+  
+  // Helper to validate and extract bool argument
+  bool getBoolArg(const JsonVariantConst args, const char* name, bool& value, String& error) const {
+    if (!args.is<JsonObjectConst>()) {
+      error = "arguments_must_be_object";
+      return false;
+    }
+    
+    JsonObjectConst obj = args.as<JsonObjectConst>();
+    if (!obj.containsKey(name)) {
+      error = String("missing_argument_") + name;
+      return false;
+    }
+    
+    value = obj[name].as<bool>();
+    return true;
+  }
+  
+  // Helper to validate and extract string argument
+  bool getStringArg(const JsonVariantConst args, const char* name, const char*& value, String& error) const {
+    if (!args.is<JsonObjectConst>()) {
+      error = "arguments_must_be_object";
+      return false;
+    }
+    
+    JsonObjectConst obj = args.as<JsonObjectConst>();
+    if (!obj.containsKey(name)) {
+      error = String("missing_argument_") + name;
+      return false;
+    }
+    
+    value = obj[name].as<const char*>();
+    return true;
+  }
+  
+  // Helper to add text content to response
+  void addTextContent(JsonArray& content, const char* text) const {
+    JsonObject textContent = content.createNestedObject();
+    textContent["type"] = "text";
+    textContent["text"] = text;
+  }
+};
+
+// Tool Registry
+class ToolRegistry {
+private:
+  static const int MAX_TOOLS = 10;
+  McpTool* tools[MAX_TOOLS];
+  int toolCount = 0;
+  
+public:
+  void registerTool(McpTool* tool) {
+    if (toolCount < MAX_TOOLS) {
+      tools[toolCount++] = tool;
+    }
+  }
+  
+  McpTool* findTool(const char* name) {
+    for (int i = 0; i < toolCount; i++) {
+      if (strcmp(tools[i]->getName(), name) == 0) {
+        return tools[i];
+      }
+    }
+    return nullptr;
+  }
+  
+  void buildToolsList(JsonArray& toolsArray) {
+    for (int i = 0; i < toolCount; i++) {
+      JsonObject tool = toolsArray.createNestedObject();
+      tools[i]->buildSchema(tool);
+    }
+  }
+  
+  int getToolCount() const { return toolCount; }
+};
+
+// Global registry
+ToolRegistry toolRegistry;
+
+// ------- Concrete Tool Implementations -------
+
+class LedTool : public McpTool {
+public:
+  const char* getName() const override { return "led"; }
+  const char* getDescription() const override { return "Control the built-in LED"; }
+  
+protected:
+  void addSchemaProperties(JsonObject& schema) const override {
+    addBoolParam(schema, "on", "Turn LED on (true) or off (false)");
+  }
+  
+public:
+  bool execute(const JsonVariantConst args, JsonArray& content, String& error) override {
+    bool on;
+    if (!getBoolArg(args, "on", on, error)) return false;
+    
+    digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
+    addTextContent(content, on ? "LED turned on" : "LED turned off");
+    return true;
+  }
+};
+
+class EchoTool : public McpTool {
+public:
+  const char* getName() const override { return "echo"; }
+  const char* getDescription() const override { return "Echo back the provided text"; }
+  
+protected:
+  void addSchemaProperties(JsonObject& schema) const override {
+    addStringParam(schema, "text", "Text to echo back");
+  }
+  
+public:
+  bool execute(const JsonVariantConst args, JsonArray& content, String& error) override {
+    const char* text;
+    if (!getStringArg(args, "text", text, error)) return false;
+    
+    addTextContent(content, text);
+    return true;
+  }
+};
+
+class RgbLedTool : public McpTool {
+private:
+  const char* name;
+  const char* description;
+  int pin;
+  const char* colorName;
+  char messageBuffer[64];  // Buffer for dynamic messages
+  
+public:
+  RgbLedTool(const char* n, const char* desc, int p, const char* color) 
+    : name(n), description(desc), pin(p), colorName(color) {
+    messageBuffer[0] = '\0';
+  }
+  
+  const char* getName() const override { return name; }
+  const char* getDescription() const override { return description; }
+  
+protected:
+  void addSchemaProperties(JsonObject& schema) const override {
+    // Build description directly in JsonObject to avoid temporary string issues
+    char desc[80];
+    snprintf(desc, sizeof(desc), "Turn %s LED on (true) or off (false)", colorName);
+    addBoolParam(schema, "on", desc);
+  }
+  
+public:
+  bool execute(const JsonVariantConst args, JsonArray& content, String& error) override {
+    bool on;
+    if (!getBoolArg(args, "on", on, error)) return false;
+    
+    digitalWrite(pin, on ? LOW : HIGH);  // Active LOW
+    
+    // Use instance buffer to avoid temporary string issues
+    snprintf(messageBuffer, sizeof(messageBuffer), "%s LED turned %s", colorName, on ? "on" : "off");
+    addTextContent(content, messageBuffer);
+    return true;
+  }
+};
+
+// Tool instances
+LedTool ledTool;
+EchoTool echoTool;
+RgbLedTool redLedTool("red_led", "Control the red LED", LED_RED, "Red");
+RgbLedTool greenLedTool("green_led", "Control the green LED", LED_GREEN, "Green");
+RgbLedTool blueLedTool("blue_led", "Control the blue LED", LED_BLUE, "Blue");
 
 void sseLog(const char* msg) {
   StaticJsonDocument<JSON_MED> doc;
@@ -66,144 +322,12 @@ void sseResult(const char* msg) {
   events.send(msg, "result", millis());
 }
 
-// ------- Tool: LED -------
-StaticJsonDocument<JSON_SMALL> ledCall(const JsonVariantConst args) {
-  StaticJsonDocument<JSON_SMALL> resp;
-  bool on = false;
-
-  if (args.is<JsonObjectConst>()) {
-    JsonObjectConst obj = args.as<JsonObjectConst>();
-    if (obj.containsKey("on")) {
-      on = obj["on"].as<bool>();
-    } else {
-      resp["error"] = "missing_argument_on";
-      return resp;
-    }
-  } else {
-    resp["error"] = "arguments_must_be_object";
-    return resp;
-  }
-
-  digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
-  
-  // Return content in MCP format
-  JsonArray content = resp.createNestedArray("content");
-  JsonObject textContent = content.createNestedObject();
-  textContent["type"] = "text";
-  textContent["text"] = on ? "LED turned on" : "LED turned off";
-  
-  return resp;
-}
-
-// ------- Tool: ECHO -------
-StaticJsonDocument<JSON_MED> echoCall(const JsonVariantConst args) {
-  StaticJsonDocument<JSON_MED> resp;
-  const char* text = "";
-  
-  if (args.is<JsonObjectConst>() && args.as<JsonObjectConst>().containsKey("text")) {
-    text = args["text"].as<const char*>();
-  } else {
-    resp["error"] = "missing_argument_text";
-    return resp;
-  }
-  
-  // Return content in MCP format
-  JsonArray content = resp.createNestedArray("content");
-  JsonObject textContent = content.createNestedObject();
-  textContent["type"] = "text";
-  textContent["text"] = text;
-  
-  return resp;
-}
-
-// ------- Tool: RED LED -------
-StaticJsonDocument<JSON_SMALL> redLedCall(const JsonVariantConst args) {
-  StaticJsonDocument<JSON_SMALL> resp;
-  bool on = false;
-
-  if (args.is<JsonObjectConst>()) {
-    JsonObjectConst obj = args.as<JsonObjectConst>();
-    if (obj.containsKey("on")) {
-      on = obj["on"].as<bool>();
-    } else {
-      resp["error"] = "missing_argument_on";
-      return resp;
-    }
-  } else {
-    resp["error"] = "arguments_must_be_object";
-    return resp;
-  }
-
-  digitalWrite(LED_RED, on ? LOW : HIGH);  // Active LOW
-  
-  JsonArray content = resp.createNestedArray("content");
-  JsonObject textContent = content.createNestedObject();
-  textContent["type"] = "text";
-  textContent["text"] = on ? "Red LED turned on" : "Red LED turned off";
-  
-  return resp;
-}
-
-// ------- Tool: GREEN LED -------
-StaticJsonDocument<JSON_SMALL> greenLedCall(const JsonVariantConst args) {
-  StaticJsonDocument<JSON_SMALL> resp;
-  bool on = false;
-
-  if (args.is<JsonObjectConst>()) {
-    JsonObjectConst obj = args.as<JsonObjectConst>();
-    if (obj.containsKey("on")) {
-      on = obj["on"].as<bool>();
-    } else {
-      resp["error"] = "missing_argument_on";
-      return resp;
-    }
-  } else {
-    resp["error"] = "arguments_must_be_object";
-    return resp;
-  }
-
-  digitalWrite(LED_GREEN, on ? LOW : HIGH);  // Active LOW
-  
-  JsonArray content = resp.createNestedArray("content");
-  JsonObject textContent = content.createNestedObject();
-  textContent["type"] = "text";
-  textContent["text"] = on ? "Green LED turned on" : "Green LED turned off";
-  
-  return resp;
-}
-
-// ------- Tool: BLUE LED -------
-StaticJsonDocument<JSON_SMALL> blueLedCall(const JsonVariantConst args) {
-  StaticJsonDocument<JSON_SMALL> resp;
-  bool on = false;
-
-  if (args.is<JsonObjectConst>()) {
-    JsonObjectConst obj = args.as<JsonObjectConst>();
-    if (obj.containsKey("on")) {
-      on = obj["on"].as<bool>();
-    } else {
-      resp["error"] = "missing_argument_on";
-      return resp;
-    }
-  } else {
-    resp["error"] = "arguments_must_be_object";
-    return resp;
-  }
-
-  digitalWrite(LED_BLUE, on ? LOW : HIGH);  // Active LOW
-  
-  JsonArray content = resp.createNestedArray("content");
-  JsonObject textContent = content.createNestedObject();
-  textContent["type"] = "text";
-  textContent["text"] = on ? "Blue LED turned on" : "Blue LED turned off";
-  
-  return resp;
-}
-
 // ------- HTTP Handlers -------
 
 // Handle MCP JSON-RPC 2.0 requests
 void handleMCP(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+  McpRequestIndicator indicator;  // LED on when created, off when function exits
+  
   StaticJsonDocument<JSON_LARGE> reqDoc;
   DeserializationError err = deserializeJson(reqDoc, data, len);
   
@@ -297,70 +421,8 @@ void handleMCP(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t
     JsonObject result = response.createNestedObject("result");
     JsonArray tools = result.createNestedArray("tools");
     
-    // LED tool
-    JsonObject ledTool = tools.createNestedObject();
-    ledTool["name"] = "led";
-    ledTool["description"] = "Control the built-in LED";
-    JsonObject ledSchema = ledTool.createNestedObject("inputSchema");
-    ledSchema["type"] = "object";
-    JsonObject ledProps = ledSchema.createNestedObject("properties");
-    JsonObject ledOnProp = ledProps.createNestedObject("on");
-    ledOnProp["type"] = "boolean";
-    ledOnProp["description"] = "Turn LED on (true) or off (false)";
-    JsonArray ledReq = ledSchema.createNestedArray("required");
-    ledReq.add("on");
-    
-    // Echo tool
-    JsonObject echoTool = tools.createNestedObject();
-    echoTool["name"] = "echo";
-    echoTool["description"] = "Echo back the provided text";
-    JsonObject echoSchema = echoTool.createNestedObject("inputSchema");
-    echoSchema["type"] = "object";
-    JsonObject echoProps = echoSchema.createNestedObject("properties");
-    JsonObject echoTextProp = echoProps.createNestedObject("text");
-    echoTextProp["type"] = "string";
-    echoTextProp["description"] = "Text to echo back";
-    JsonArray echoReq = echoSchema.createNestedArray("required");
-    echoReq.add("text");
-    
-    // Red LED tool
-    JsonObject redTool = tools.createNestedObject();
-    redTool["name"] = "red_led";
-    redTool["description"] = "Control the red LED";
-    JsonObject redSchema = redTool.createNestedObject("inputSchema");
-    redSchema["type"] = "object";
-    JsonObject redProps = redSchema.createNestedObject("properties");
-    JsonObject redOnProp = redProps.createNestedObject("on");
-    redOnProp["type"] = "boolean";
-    redOnProp["description"] = "Turn red LED on (true) or off (false)";
-    JsonArray redReq = redSchema.createNestedArray("required");
-    redReq.add("on");
-    
-    // Green LED tool
-    JsonObject greenTool = tools.createNestedObject();
-    greenTool["name"] = "green_led";
-    greenTool["description"] = "Control the green LED";
-    JsonObject greenSchema = greenTool.createNestedObject("inputSchema");
-    greenSchema["type"] = "object";
-    JsonObject greenProps = greenSchema.createNestedObject("properties");
-    JsonObject greenOnProp = greenProps.createNestedObject("on");
-    greenOnProp["type"] = "boolean";
-    greenOnProp["description"] = "Turn green LED on (true) or off (false)";
-    JsonArray greenReq = greenSchema.createNestedArray("required");
-    greenReq.add("on");
-    
-    // Blue LED tool
-    JsonObject blueTool = tools.createNestedObject();
-    blueTool["name"] = "blue_led";
-    blueTool["description"] = "Control the blue LED";
-    JsonObject blueSchema = blueTool.createNestedObject("inputSchema");
-    blueSchema["type"] = "object";
-    JsonObject blueProps = blueSchema.createNestedObject("properties");
-    JsonObject blueOnProp = blueProps.createNestedObject("on");
-    blueOnProp["type"] = "boolean";
-    blueOnProp["description"] = "Turn blue LED on (true) or off (false)";
-    JsonArray blueReq = blueSchema.createNestedArray("required");
-    blueReq.add("on");
+    // Use registry to build tools list
+    toolRegistry.buildToolsList(tools);
     
     String out;
     serializeJson(response, out);
@@ -387,133 +449,10 @@ void handleMCP(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t
     const char* toolName = params["name"];
     JsonVariantConst arguments = params["arguments"];
     
-    if (strcmp(toolName, "led") == 0) {
-      auto toolResult = ledCall(arguments);
-      
-      // Check if tool returned error
-      if (toolResult.containsKey("error")) {
-        JsonObject error = response.createNestedObject("error");
-        error["code"] = -32603;
-        error["message"] = toolResult["error"].as<String>();
-        
-        String out;
-        serializeJson(response, out);
-        request->send(400, "application/json", out);
-        return;
-      }
-      
-      // Success - return tool result
-      response["result"] = toolResult;
-      
-      String out;
-      serializeJson(response, out);
-      Serial.println("<<< RESPONSE:");
-      serializeJsonPretty(response, Serial);
-      Serial.println();
-      request->send(200, "application/json", out);
-      sseResult(out.c_str());
-      return;
-      
-    } else if (strcmp(toolName, "echo") == 0) {
-      auto toolResult = echoCall(arguments);
-      
-      // Check if tool returned error
-      if (toolResult.containsKey("error")) {
-        JsonObject error = response.createNestedObject("error");
-        error["code"] = -32603;
-        error["message"] = toolResult["error"].as<String>();
-        
-        String out;
-        serializeJson(response, out);
-        request->send(400, "application/json", out);
-        return;
-      }
-      
-      // Success - return tool result
-      response["result"] = toolResult;
-      
-      String out;
-      serializeJson(response, out);
-      Serial.println("<<< RESPONSE:");
-      serializeJsonPretty(response, Serial);
-      Serial.println();
-      request->send(200, "application/json", out);
-      sseResult(out.c_str());
-      return;
-      
-    } else if (strcmp(toolName, "red_led") == 0) {
-      auto toolResult = redLedCall(arguments);
-      
-      if (toolResult.containsKey("error")) {
-        JsonObject error = response.createNestedObject("error");
-        error["code"] = -32603;
-        error["message"] = toolResult["error"].as<String>();
-        
-        String out;
-        serializeJson(response, out);
-        request->send(400, "application/json", out);
-        return;
-      }
-      
-      response["result"] = toolResult;
-      String out;
-      serializeJson(response, out);
-      Serial.println("<<< RESPONSE:");
-      serializeJsonPretty(response, Serial);
-      Serial.println();
-      request->send(200, "application/json", out);
-      sseResult(out.c_str());
-      return;
-      
-    } else if (strcmp(toolName, "green_led") == 0) {
-      auto toolResult = greenLedCall(arguments);
-      
-      if (toolResult.containsKey("error")) {
-        JsonObject error = response.createNestedObject("error");
-        error["code"] = -32603;
-        error["message"] = toolResult["error"].as<String>();
-        
-        String out;
-        serializeJson(response, out);
-        request->send(400, "application/json", out);
-        return;
-      }
-      
-      response["result"] = toolResult;
-      String out;
-      serializeJson(response, out);
-      Serial.println("<<< RESPONSE:");
-      serializeJsonPretty(response, Serial);
-      Serial.println();
-      request->send(200, "application/json", out);
-      sseResult(out.c_str());
-      return;
-      
-    } else if (strcmp(toolName, "blue_led") == 0) {
-      auto toolResult = blueLedCall(arguments);
-      
-      if (toolResult.containsKey("error")) {
-        JsonObject error = response.createNestedObject("error");
-        error["code"] = -32603;
-        error["message"] = toolResult["error"].as<String>();
-        
-        String out;
-        serializeJson(response, out);
-        request->send(400, "application/json", out);
-        return;
-      }
-      
-      response["result"] = toolResult;
-      String out;
-      serializeJson(response, out);
-      Serial.println("<<< RESPONSE:");
-      serializeJsonPretty(response, Serial);
-      Serial.println();
-      request->send(200, "application/json", out);
-      sseResult(out.c_str());
-      return;
-      
-    } else {
+    // Find tool in registry
+    McpTool* tool = toolRegistry.findTool(toolName);
+    
+    if (!tool) {
       JsonObject error = response.createNestedObject("error");
       error["code"] = -32601;
       error["message"] = "Unknown tool";
@@ -523,6 +462,34 @@ void handleMCP(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t
       request->send(400, "application/json", out);
       return;
     }
+    
+    // Execute tool
+    JsonObject result = response.createNestedObject("result");
+    JsonArray content = result.createNestedArray("content");
+    String errorMsg;
+    
+    if (!tool->execute(arguments, content, errorMsg)) {
+      // Tool execution failed
+      response.remove("result");
+      JsonObject error = response.createNestedObject("error");
+      error["code"] = -32603;
+      error["message"] = errorMsg;
+      
+      String out;
+      serializeJson(response, out);
+      request->send(400, "application/json", out);
+      return;
+    }
+    
+    // Success
+    String out;
+    serializeJson(response, out);
+    Serial.println("<<< RESPONSE:");
+    serializeJsonPretty(response, Serial);
+    Serial.println();
+    request->send(200, "application/json", out);
+    sseResult(out.c_str());
+    return;
   }
 
   // Method not found
@@ -534,7 +501,6 @@ void handleMCP(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t
   serializeJson(response, out);
   request->send(404, "application/json", out);
 }
-
 void handleStatus(AsyncWebServerRequest* request) {
   StaticJsonDocument<JSON_SMALL> doc;
   doc["server"]    = SERVER_NAME;
@@ -546,18 +512,12 @@ void handleStatus(AsyncWebServerRequest* request) {
 }
 
 void handleTools(AsyncWebServerRequest* request) {
-  StaticJsonDocument<JSON_MED> doc;
+  // Legacy endpoint - now uses registry for consistency
+  StaticJsonDocument<JSON_LARGE> doc;
   JsonArray tools = doc.createNestedArray("tools");
-
-  JsonObject t1 = tools.createNestedObject();
-  t1["name"] = "led";
-  JsonArray t1args = t1.createNestedArray("args");
-  t1args.add("on");
-
-  JsonObject t2 = tools.createNestedObject();
-  t2["name"] = "echo";
-  JsonArray t2args = t2.createNestedArray("args");
-  t2args.add("text");
+  
+  // Use registry to populate all tools
+  toolRegistry.buildToolsList(tools);
 
   String out;
   serializeJson(doc, out);
@@ -565,7 +525,7 @@ void handleTools(AsyncWebServerRequest* request) {
 }
 
 void handleInvoke(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
-  // Accumulate body (AsyncWebServer buffers it for us)
+  // Legacy endpoint - use new tool system
   StaticJsonDocument<JSON_MED> doc;
   DeserializationError err = deserializeJson(doc, data, len);
   if (err) {
@@ -573,33 +533,77 @@ void handleInvoke(AsyncWebServerRequest* request, uint8_t* data, size_t len, siz
     return;
   }
 
-  const char* tool = doc["tool"] | nullptr;
+  const char* toolName = doc["tool"] | nullptr;
   JsonVariantConst args = doc["args"];
 
-  if (!tool) {
+  if (!toolName) {
     request->send(400, "application/json", "{\"error\":\"missing_tool\"}");
     return;
   }
 
   sseLog("invoke received");
 
-  String out;
-  if (strcmp(tool, "led") == 0) {
-    auto resp = ledCall(args);
-    serializeJson(resp, out);
-    request->send(200, "application/json", out);
-    sseResult(out.c_str());
-    return;
-  } else if (strcmp(tool, "echo") == 0) {
-    auto resp = echoCall(args);
-    serializeJson(resp, out);
-    request->send(200, "application/json", out);
-    sseResult(out.c_str());
-    return;
-  } else {
+  // Find and execute tool
+  McpTool* tool = toolRegistry.findTool(toolName);
+  if (!tool) {
     request->send(400, "application/json", "{\"error\":\"unknown_tool\"}");
     return;
   }
+  
+  StaticJsonDocument<JSON_MED> resp;
+  JsonArray content = resp.createNestedArray("content");
+  String errorMsg;
+  
+  if (!tool->execute(args, content, errorMsg)) {
+    resp.clear();
+    resp["error"] = errorMsg;
+  }
+  
+  String out;
+  serializeJson(resp, out);
+  request->send(200, "application/json", out);
+  sseResult(out.c_str());
+}
+
+// ------- Display Helper Function -------
+void showQRCode() {
+  if (!displayAvailable) return;
+  
+  // Show intro animation
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(52, 10);
+  display.print("mcp");
+  
+  display.setTextSize(3);
+  display.setCursor(16, 28);
+  display.print("IDEAS");
+  display.display();
+  Serial.println("Intro displayed");
+  delay(3000);  // 3 seconds
+  
+  // Show QR code
+  String ipAddress = WiFi.localIP().toString();
+  String qrText = "http://" + ipAddress + ":" + String(SERVER_PORT) + "/mcp";
+  String subText = ipAddress + ":" + String(SERVER_PORT);
+  Serial.printf("Showing QR code for: %s\n", qrText.c_str());
+  
+  display.clearDisplay();
+  QRCodeGFX qrcode(display);
+  qrcode.setScale(2);
+  qrcode.generateData(qrText.c_str());
+  
+  int qrWidth = 58;
+  int xPos = (SCREEN_WIDTH - qrWidth) / 2;
+  qrcode.draw(xPos, -3);
+  
+  display.setCursor(0, 57);
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.print(subText.c_str());
+  display.display();
+  Serial.println("QR code displayed");
 }
 
 void setup() {
@@ -619,18 +623,83 @@ void setup() {
   delay(1000);
 
   Serial.println("ARDUINO NANO ESP32 - MCP SERVER v1.0.0");
+  
+  // Register all tools
+  toolRegistry.registerTool(&ledTool);
+  toolRegistry.registerTool(&echoTool);
+  toolRegistry.registerTool(&redLedTool);
+  toolRegistry.registerTool(&greenLedTool);
+  toolRegistry.registerTool(&blueLedTool);
+  Serial.printf("Registered %d tools\n", toolRegistry.getToolCount());
 
-  // Wi-Fi
+  // Initialize I2C and display
+  Wire.begin();
+  Serial.println("I2C initialized");
+  delay(100);
+  
+  if(display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    displayAvailable = true;
+    Serial.println("✓ Display successfully initialized");
+    
+    display.clearDisplay();
+    display.display();
+    delay(100);
+    
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 20);
+    display.println("Connecting WiFi");
+    display.setCursor(0, 35);
+    display.print(WIFI_SSID);
+    display.display();
+  } else {
+    displayAvailable = false;
+    Serial.println("WARNING: OLED Display not found!");
+    Serial.println("MCP Server continues without display.");
+  }
+
+  // Connect WiFi with progress indicator
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PSK);
-  //Serial.printf("Connecting to %s", WIFI_SSID);
+  Serial.printf("Connecting to %s", WIFI_SSID);
+  
+  int dotCount = 0;
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
+    
+    if (displayAvailable) {
+      display.fillRect(0, 50, 128, 14, SSD1306_BLACK);
+      display.setCursor(0, 50);
+      for(int i = 0; i < dotCount; i++) {
+        display.print(".");
+      }
+      display.display();
+      dotCount = (dotCount + 1) % 10;
+    }
   }
+  
   Serial.println();
   Serial.printf("Connected - IP: %s\n", WiFi.localIP().toString().c_str());
+  
+  // WiFi connected message
+  if (displayAvailable) {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0, 20);
+    display.println("WiFi connected!");
+    display.setCursor(0, 35);
+    display.print(WiFi.localIP().toString());
+    display.display();
+    delay(2000);  // 2 seconds to read the message
+  }
 
+  // Enable CORS for web browser access
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
+  
   // HTTP routes
   server.on("/status", HTTP_GET, handleStatus);
   server.on("/tools",  HTTP_GET, handleTools);  // Legacy endpoint
@@ -669,7 +738,10 @@ void setup() {
   });
 
   server.begin();
-  Serial.println("Server ready on port 8000");
+  Serial.printf("Server ready on port %d\n", SERVER_PORT);
+  
+  // Show QR code (stays permanent)
+  showQRCode();
 }
 
 void loop() {
