@@ -27,7 +27,8 @@ Video:
 <br />
 <br />
 
-Implemented a MCP SDK for C++ (none exists officially) optimized for embedded systems. Features automatic JSON schema generation, registry-based tool discovery, and memory-safe execution—all in ~200 lines. Architecture mirrors official SDKs (TypeScript/Python) while addressing embedded constraints. Demonstrates full MCP 2024-11-05 protocol compliance with hardware control tools. I kept it small and readable, and made it work to run simple tools like switching lights on and off.
+Implemented a MCP SDK for C++ (none exists officially) optimized for embedded systems. Features automatic JSON schema generation, registry-based tool discovery, and memory-safe execution.  
+Architecture mirrors official SDKs (TypeScript/Python) while addressing embedded constraints. Demonstrates full MCP 2024-11-05 protocol compliance with hardware control tools. I kept it small and readable, and made it work to run simple tools like switching lights on and off.
 
 <br />
 
