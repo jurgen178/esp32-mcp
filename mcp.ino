@@ -77,16 +77,28 @@ const unsigned long NOTIFICATION_COOLDOWN_MS = 50;  // Debounce notifications
 unsigned long bootMillis;
 bool displayAvailable = false;  // Flag if display is available
 
-// RAII class for LED indicator on MCP requests
+// Forward declarations
+extern Adafruit_SSD1306 display;
+extern bool displayAvailable;
+
+// RAII class for indicator on MCP requests
 class McpRequestIndicator {
 public:
   McpRequestIndicator() {
-    digitalWrite(LED_BUILTIN, HIGH);  // LED on
+    if (displayAvailable) {
+      // Draw indicator dot in top right corner
+      display.fillCircle(122, 3, 2, SSD1306_WHITE);
+      display.display();
+    }
   }
   
   ~McpRequestIndicator() {
     delay(LED_INDICATOR_DELAY_MS);  // Keep visible briefly
-    digitalWrite(LED_BUILTIN, LOW);   // LED off
+    if (displayAvailable) {
+      // Clear indicator dot
+      display.fillCircle(122, 3, 2, SSD1306_BLACK);
+      display.display();
+    }
   }
 };
 
