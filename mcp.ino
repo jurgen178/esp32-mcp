@@ -686,6 +686,17 @@ void handleMCP(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t
     return;
   }
 
+  // Handle ping
+  if (strcmp(method, "ping") == 0) {
+    JsonObject result = response.createNestedObject("result");
+    // Empty result object
+    
+    String out;
+    serializeJson(response, out);
+    request->send(200, "application/json", out);
+    return;
+  }
+
   // Handle tools/list
   if (strcmp(method, "tools/list") == 0) {
     JsonObject result = response.createNestedObject("result");
